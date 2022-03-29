@@ -98,7 +98,7 @@ def get_trades(trade_file) -> List[Trade]:
     for line in lines:
         exchange, date, pair, side, price, quantity, fee, fee_currency, fee_amt_base, fee_attached, *other_qty = line.rstrip().split("\t")
         alt_qty = Decimal(other_qty[0]) if other_qty else None
-        trade_list.append(Trade(exchange, convert_date(date), pair, side, Decimal(quantity.replace(',', '')), Decimal(price.replace(',', '')), Decimal(fee.replace(',', '')), fee_currency, Decimal(fee_amt_base.replace(',', '')), bool(fee_attached), alt_qty))
+        trade_list.append(Trade(exchange, convert_date(date), pair, side, Decimal(quantity.replace(',', '')), Decimal(price.replace(',', '')), Decimal(fee.replace(',', '')), fee_currency, Decimal(fee_amt_base.replace(',', '')), fee_attached == 'True', alt_qty))
 
     # return the dict
     return trade_list
