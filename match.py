@@ -59,7 +59,14 @@ class Matcher:
 
     def __init__(self, trades: List[Trade], price_data: PriceData, merge_minutes: int, excluded_fiat: List[str]):
         """
-        TODO: placeholder
+        Parameters
+        ----------
+        price_data : PriceData
+            an object used to look up prices
+        merge_minutes : int
+            the number of minutes within which 2 executions can be considered for merging; 0 means do not merge
+        excluded_fiat : List[str]
+            a list of currencies to be excluded from matching, typically fiat since they are not reported
         """
         self.queue: WaitingQueue = {}
 

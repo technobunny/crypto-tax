@@ -25,8 +25,14 @@ class PriceData:
 
     Methods
     -------
-    says(sound=None)
-        Prints the animals name and what sound it makes
+    lookup_price(date, currency=None, base_currency=None)
+        Retrieves the price on the date of the specified currency (currency_out if not specified) in terms of the output currency or base_currency
+    is_input_currency(currency)
+        True if the currency is this PriceData's input currency, False otherwise
+    is_output_currency(currency)
+        True if the currency is this PriceData's output currency, False otherwise
+    is_inout_currency(currency)
+        True if the currency is this PriceData's input or output currency, False otherwise
     """
 
     def __init__(self, price_lookup: PriceLookup, currency_in: str, currency_out: str = None, currency_direct: bool = False):
@@ -41,18 +47,8 @@ class PriceData:
             the currency that all results must be converted to ultimately; may be same as currency_in
         currency_indirect : bool
             whether to use direct or indirect lookup method where possible
-
-        Methods
-        -------
-        lookup_price(date, currency=None, base_currency=None)
-            Retrieves the price on the date of the specified currency (currency_out if not specified) in terms of the output currency or base_currency
-        is_input_currency(currency)
-            True if the currency is this PriceData's input currency, False otherwise
-        is_output_currency(currency)
-            True if the currency is this PriceData's output currency, False otherwise
-        is_inout_currency(currency)
-            True if the currency is this PriceData's input or output currency, False otherwise
         """
+        
         self.lookup = price_lookup
         self.currency_in = currency_in
         self.currency_out = currency_out or currency_in
@@ -79,10 +75,10 @@ class PriceData:
             currency = self.currency_out
 
         if self.is_output_currency(currency):
-            return Decimal(1)
+            return Decimal(1), None
         output_price = self.lookup(self.currency_out, date) or Decimal(1)
         if self.is_inout_currency(currency):
-            return output_price
+            return output_price, None
 
         direct_price = self.lookup(currency, date) / output_price if self.currency_direct or base_currency is None else None
         indirect_price = None

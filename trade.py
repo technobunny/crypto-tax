@@ -152,9 +152,9 @@ class Trade:
         # the actual amount of the fee in output currency
         if self.fee_base > Decimal(0):
             # TODO: this call makes an assumption that fee_base is in INPUT currency
-            fee_out = self.fee_base / price_data.lookup_price(self.date)
+            fee_out = self.fee_base / price_data.lookup_price(self.date)[0]
         else:
-            fee_out = self.fee * price_data.lookup_price(self.date, self.fee_currency)
+            fee_out = self.fee * price_data.lookup_price(self.date, self.fee_currency)[0]
 
         if attach_fee_to_buy:
             self.modify_fee(buy, fee_out)
