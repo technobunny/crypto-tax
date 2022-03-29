@@ -165,7 +165,7 @@ class Trade:
 
     def modify_fee(self, execution: Execution, fee_out: Decimal) -> None:
         """ Update the fee and potentially quantity """
-        if not self.fee_attached:
+        if not self.fee_attached and self.fee_currency == execution.asset:
             execution.quantity -= self.fee
         execution.fee = fee_out
 
