@@ -63,7 +63,6 @@ class Trade:
         self.fee_attached = fee_attached
         self.alt_qty = alt_qty
 
-        # self.underlying, self.asset = pair.split("/")
         currencies = pair.split("/")
         self.underlying = currencies[1]
         self.asset = currencies[0]
@@ -73,9 +72,9 @@ class Trade:
 
         if self.side == 'Buy':
             buy_quantity = self.quantity
-            sell_quantity = Decimal(self.alt_qty) if self.alt_qty else self.quantity * self.price
+            sell_quantity = self.alt_qty or self.quantity * self.price
         else:
-            buy_quantity = Decimal(self.alt_qty) if self.alt_qty else self.quantity * self.price
+            buy_quantity = self.alt_qty or self.quantity * self.price
             sell_quantity = self.quantity
 
         logging.debug("Normalizing execution %s %.4f %s @ %s on %s", self.side, self.quantity, f'{self.asset}/{self.underlying}', self.price, self.date)
@@ -156,8 +155,6 @@ class Trade:
             fee_out = self.fee_base / price_data.lookup_price(self.date)
         else:
             fee_out = self.fee * price_data.lookup_price(self.date, self.fee_currency)
-
-        # fee_out /= price_data.lookup_price(self.date, self.fee_currency)
 
         if attach_fee_to_buy:
             self.modify_fee(buy, fee_out)

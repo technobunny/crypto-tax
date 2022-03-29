@@ -42,20 +42,26 @@ class Match:
             )
         )
 
-class MatchQueue:
+MatchResults = Tuple[List[Match], Dict[str, List[Execution]]]
+WaitingQueue = Dict[str, List[Execution]]
+
+PeekTop = Callable[[List[Execution]], Execution]
+TakeTop = Callable[[List[Execution]], Execution]
+AddTop = Callable[[List[Execution], Execution], None]
+
+class Matcher:
     """
     A class representing a queue (FIFO, LIFO, etc) for matching
     """
 
     SECONDS_PER_MINUTE = 60
-    # If an execution's price is within FUZZY_MATCH_PRICE (%) of another execution, they are merged
     FUZZY_MATCH_PRICE = 0.4
 
     def __init__(self, trades: List[Trade], price_data: PriceData, merge_minutes: int, excluded_fiat: List[str]):
         """
         TODO: placeholder
         """
-        self.queue: Dict[str, List[Execution]] = { }
+        self.queue: WaitingQueue = {}
 
         # go over each Trade and split it into its (1 or 2) normalized Executions, building up a queue for each asset type
         for trade in trades:
@@ -67,10 +73,6 @@ class MatchQueue:
             if sell is not None and sell.asset not in excluded_fiat:
                 self.enqueue(sell.asset, sell, merge_minutes)
 
-    def match(self, matcher: Callable[[Dict[str, List[Execution]]], Tuple[List[Match], Dict[str, List[Execution]]]]) -> Tuple[List[Match], Dict[str, List[Execution]]]:
-        """ Run the matching algorithm and return results; definitely refactor this at some stage """
-        return matcher(self.queue)
-
     def enqueue(self, asset: str, execution: Execution, merge_minutes: int):
         """ Add execution to the queue, merging if allowed """
         if asset not in self.queue:
@@ -81,8 +83,8 @@ class MatchQueue:
         if merge_minutes > 0 and len(queue) > 0:
             previous = queue[-1]
 
-            # merge condition is in MatchQueue rather than Execution
-            if previous.exchange == execution.exchange and previous.side == execution.side and MatchQueue.prices_close(previous, execution) and MatchQueue.times_close(previous, execution, merge_minutes):
+            # merge condition is in Matcher rather than Execution
+            if previous.exchange == execution.exchange and previous.side == execution.side and Matcher.prices_close(previous, execution) and Matcher.times_close(previous, execution, merge_minutes):
                 previous.merge(execution)
                 return
         queue.append(execution)
@@ -90,29 +92,21 @@ class MatchQueue:
     @classmethod
     def prices_close(cls, first: Execution, second: Execution) -> bool:
         """ Return True if the prices are within a certain % of each other """
-        return abs(first.price - second.price) / first.price < MatchQueue.FUZZY_MATCH_PRICE
+        return abs(first.price - second.price) / first.price < Matcher.FUZZY_MATCH_PRICE
 
     @classmethod
     def times_close(cls, first: Execution, second: Execution, minutes: int) -> bool:
         """ Return True if the execution times are within a certain range of each other """
         time_delta = first.date - second.date
         seconds = abs(time_delta.days * 86400 + time_delta.seconds)
-        return seconds < minutes * MatchQueue.SECONDS_PER_MINUTE
+        return seconds < minutes * Matcher.SECONDS_PER_MINUTE
 
-    @classmethod
-    def match_fifo_lifo(
-        cls,
-        queue_dict: Dict[str, List[Execution]],
-        # top
-        peek_top: Callable[[List[Execution]], Execution],
-        take_top: Callable[[List[Execution]], Execution],
-        add_top: Callable[[List[Execution], Execution], None],
-        ) -> Tuple[List[Match], Dict[str, List[Execution]]]:
-        """ Match using LIFO method """
+    def match_fifo_lifo(self, peek_top: PeekTop, take_top: TakeTop, add_top: AddTop) -> MatchResults:
+        """ Match using fifo / lifo """
         matches: List[Match] = []
-        leftovers: Dict[str, List[Execution]] = {}
+        leftovers: WaitingQueue = {}
 
-        for (currency, executions) in queue_dict.items():
+        for (currency, executions) in self.queue.items():
             queue: Deque[Execution] = deque()
             for execution in executions:
                 # if queue is empty, or top is same side, add
@@ -162,10 +156,10 @@ class MatchQueue:
 
         return matches, leftovers
 
-    def match_fifo(self) -> Tuple[List[Match], Dict[str, List[Execution]]]:
+    def match_fifo(self) -> MatchResults:
         """ Match using a FIFO strategy """
-        return MatchQueue.match_fifo_lifo(self.queue, lambda x: x[0], lambda x: x.popleft(), lambda x, y: x.appendleft(y))
+        return self.match_fifo_lifo(lambda x: x[0], lambda x: x.popleft(), lambda x, y: x.appendleft(y))
 
-    def match_lifo(self) -> Tuple[List[Match], Dict[str, List[Execution]]]:
+    def match_lifo(self) -> MatchResults:
         """ Match using a LIFO strategy """
-        return MatchQueue.match_fifo_lifo(self.queue, lambda x: x[-1], lambda x: x.pop(), lambda x, y: x.append(y))
+        return self.match_fifo_lifo(lambda x: x[-1], lambda x: x.pop(), lambda x, y: x.append(y))

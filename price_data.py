@@ -6,6 +6,8 @@ from typing import Callable, Tuple
 from datetime import datetime
 from decimal import Decimal
 
+PriceLookup = Callable[[str, datetime], Decimal]
+
 class PriceData:
     """
     A class that encapsulates price information and actions.
@@ -27,7 +29,7 @@ class PriceData:
         Prints the animals name and what sound it makes
     """
 
-    def __init__(self, price_lookup: Callable[[str, datetime], Decimal], currency_in: str = 'USD', currency_out: str = None, currency_direct: bool = False):
+    def __init__(self, price_lookup: PriceLookup, currency_in: str, currency_out: str = None, currency_direct: bool = False):
         """
         Parameters
         ----------
@@ -53,8 +55,8 @@ class PriceData:
         """
         self.lookup = price_lookup
         self.currency_in = currency_in
-        self.currency_out = currency_out
-        self.currency_direct = currency_direct
+        self.currency_out = currency_out or currency_in
+        self.currency_direct = currency_direct or False
 
     def lookup_price(self, date: datetime, currency: str = None, base_currency: str = None) -> Tuple[Decimal, Decimal]:
         """
@@ -85,7 +87,7 @@ class PriceData:
         direct_price = self.lookup(currency, date) / output_price if self.currency_direct or base_currency is None else None
         indirect_price = None
 
-        if direct_price is  None:
+        if direct_price is None:
             if base_currency == currency or self.is_inout_currency(base_currency):
                 indirect_price = Decimal(1)
             else:

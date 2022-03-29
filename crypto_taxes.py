@@ -2,6 +2,7 @@
 This is a script that helps you do your taxes, hopefully.  Let me know if it helped you.
 """
 
+import sys
 from typing import Dict, List, Tuple
 from decimal import Decimal
 from datetime import datetime
@@ -11,16 +12,17 @@ from functools import partial
 
 from trade import Trade
 from execution import Execution
-from match import MatchQueue
+from match import Matcher
 from price_data import PriceData
 
+PriceDico = Dict[str, Dict[str, Decimal]]
 
 def convert_date(date: str) -> datetime:
     """ Convert a string representing a date and time to a datetime object """
     date_object = datetime.strptime(date, '%Y-%m-%d %H:%M:%S')
     return date_object
 
-def get_price_on_date(price_dictionary: Dict[str, Dict[str, Decimal]], no_warn: List[str], currency: str, date: datetime) -> Decimal:
+def get_price_on_date(price_dictionary: PriceDico, no_warn: List[str], currency: str, date: datetime) -> Decimal:
     """ Obtain the historical price for the currency on the date """
     date_ymd = date.strftime("%Y-%m-%d")
 
@@ -33,46 +35,51 @@ def get_price_on_date(price_dictionary: Dict[str, Dict[str, Decimal]], no_warn: 
         logging.debug("Price alert: %s not found on %s", currency, date)
     return 0
 
-def get_historical_prices(price_file) -> Dict[str, Dict[str, Decimal]]:
+def get_historical_prices(price_file) -> PriceDico:
     """
     Read a file and return a 2 level hashmap of currency -> date -> price
     """
 
-    currency_dict = {}
-    currency_idx = {}
+    currency_dict: PriceDico = {}
+    currency_idx: Dict[int, str] = {}
 
-    with open(price_file, 'rt', encoding='UTF8') as infile:
-        lines = infile.readlines()
-        lines = (line.rstrip() for line in lines)
-        first_line = True
-        for line in lines:
-            pcs = line.split("\t")
+    lines: List[str]
+    try:
+        with open(price_file, 'rt', encoding='UTF8') as infile:
+            lines = infile.readlines()
+    except FileNotFoundError:
+        logging.error('Price file not found: %s', price_file)
+        return None
 
-            # if first line, add currencies and indices
-            if first_line:
-                for (idx, currency) in enumerate(pcs[1:]):
-                    # only accept XXX OPEN or XXX
-                    if ' ' in currency and ' OPEN' not in currency:
-                        continue
-                    currency = currency.split(" ")[0]
+    first_line = True
+    for line in lines:
+        pcs = line.rstrip().split("\t")
 
-                    logging.debug("Found currency %s", currency)
+        # if first line, add currencies and indices
+        if first_line:
+            for (idx, currency) in enumerate(pcs[1:]):
+                # only accept XXX OPEN or XXX
+                if ' ' in currency and ' OPEN' not in currency:
+                    continue
+                currency = currency.split(' ')[0]
 
-                    currency_idx[idx] = currency
-                    currency_dict[currency] = {}
-                first_line = False
+                logging.debug('Found currency %s', currency)
+
+                currency_idx[idx] = currency
+                currency_dict[currency] = {}
+            first_line = False
+            continue
+        # else set the value of that date, for that currency, to the price.
+        date = pcs[0]
+        for (idx, price) in enumerate(pcs[1:]):
+            if idx not in currency_idx:
                 continue
-            # else set the value of that date, for that currency, to the price.
-            date = pcs[0]
-            for (idx, price) in enumerate(pcs[1:]):
-                if idx not in currency_idx:
-                    continue
-                if price == '':
-                    continue
-                price = price.replace(',', '')
+            if price == '':
+                continue
+            price = price.replace(',', '')
 
-                price_int = Decimal(price)
-                currency_dict[currency_idx[idx]][date] = price_int
+            price_int = Decimal(price)
+            currency_dict[currency_idx[idx]][date] = price_int
 
     # return the dict
     return currency_dict
@@ -81,14 +88,17 @@ def get_trades(trade_file) -> List[Trade]:
     """ Read the trade file and convert it into a list of Trades """
     trade_list = []
 
-    with open(trade_file, 'rt', encoding='UTF8') as infile:
-        lines = infile.readlines()
-        lines = (line.rstrip() for line in lines)
-        for line in lines:
-            # destructuring is awesome
-            exchange, date, pair, side, price, quantity, fee, fee_currency, fee_amt_base, fee_attached, *other_qty = line.split("\t")
-            alt_qty = other_qty[0] if other_qty else None
-            trade_list.append(Trade(exchange, convert_date(date), pair, side, Decimal(quantity.replace(',', '')), Decimal(price.replace(',', '')), Decimal(fee.replace(',', '')), fee_currency, Decimal(fee_amt_base.replace(',', '')), bool(fee_attached), alt_qty))
+    try:
+        with open(trade_file, 'rt', encoding='UTF8') as infile:
+            lines = infile.readlines()
+    except FileNotFoundError:
+        logging.error('Trade file not found: %s', trade_file)
+        return None
+
+    for line in lines:
+        exchange, date, pair, side, price, quantity, fee, fee_currency, fee_amt_base, fee_attached, *other_qty = line.rstrip().split("\t")
+        alt_qty = Decimal(other_qty[0]) if other_qty else None
+        trade_list.append(Trade(exchange, convert_date(date), pair, side, Decimal(quantity.replace(',', '')), Decimal(price.replace(',', '')), Decimal(fee.replace(',', '')), fee_currency, Decimal(fee_amt_base.replace(',', '')), bool(fee_attached), alt_qty))
 
     # return the dict
     return trade_list
@@ -128,10 +138,16 @@ def main():
     logging.debug("Using arguments:")
     logging.debug(f"  trades   = {args.trades}\n  prices   = {args.prices}\n  currency = {args.currency_hist}\n  ccy out  = {args.currency_out}\n  strategy = {args.strategy}\n  merge    = {args.merge_minutes}")
 
-    price_data: Dict[str, Dict[str, Decimal]] = get_historical_prices(args.prices) if args.prices else {}
+    price_data: PriceDico = get_historical_prices(args.prices) if args.prices else {}
+    if price_data is None:
+        sys.exit(-1)
+
     trade_list: List[Trade] = get_trades(args.trades)
+    if trade_list is None:
+        sys.exit(-1)
+
     price_data: PriceData = PriceData(partial(get_price_on_date, price_data, args.fiat), args.currency_hist, args.currency_out, args.direct)
-    queue: MatchQueue = MatchQueue(trade_list, price_data, int(args.merge_minutes), args.fiat)
+    queue: Matcher = Matcher(trade_list, price_data, int(args.merge_minutes), args.fiat)
 
     # Now apply a matching strategy, and the results will be a tuple of (matches, leftover executions)
     matches, leftovers = queue.match_fifo() if args.strategy == 'fifo' else queue.match_lifo()
