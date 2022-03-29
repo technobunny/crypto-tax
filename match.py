@@ -10,6 +10,7 @@ import logging
 
 from execution import Execution
 from trade import Trade
+from price_data import PriceData
 
 class Match:
     """
@@ -24,7 +25,7 @@ class Match:
         self.date_to = date_to
         self.asset = asset
         self.settle_side = settle_side
-        self.quantity = quantity
+        self.quantity = quantity.quantize(Match.FOURPLACES)
         self.amount_open = amount_open.quantize(Match.TWOPLACES)
         self.amount_close = amount_close.quantize(Match.TWOPLACES)
         self.fee_open = fee_open.quantize(Match.TWOPLACES)
@@ -35,7 +36,7 @@ class Match:
     def __str__(self) -> str:
         return "\t".join(
             (
-                self.settle_side + " " + str(self.quantity.quantize(Match.FOURPLACES)) + " " + self.asset + " (" + self.exchange_from + " -> " + self.exchange_to + ")",
+                self.settle_side + " " + str(self.quantity) + " " + self.asset + " (" + self.exchange_from + " -> " + self.exchange_to + ")",
                 self.date_from.strftime('%m/%d/%Y'), self.date_to.strftime('%m/%d/%Y'),
                 str(self.amount_close - self.fee_close), str(self.amount_open + self.fee_open), 'M' if self.merged else '', '0', str(self.amount_close - self.amount_open - self.fee_open - self.fee_close)
             )
@@ -47,22 +48,20 @@ class MatchQueue:
     """
 
     SECONDS_PER_MINUTE = 60
+    # If an execution's price is within FUZZY_MATCH_PRICE (%) of another execution, they are merged
     FUZZY_MATCH_PRICE = 0.4
 
-    def __init__(self, trades: List[Trade], price_lookup: Callable[[str, datetime], Decimal], currency_in: str, currency_out: str, merge_minutes: int, price_direct: bool, excluded_fiat: List[str]):
-        # prices_currencies = list(prices.keys())
-        trades_currencies = [ key.asset for key in trades ]
-        trades_currencies_u = [ key.underlying for key in trades ]
-
-        self.queue: Dict[str, List[Execution]] = { key: [] for key in trades_currencies_u+trades_currencies }
-        self.queue[currency_in] = []
-        self.queue[currency_out] = []
+    def __init__(self, trades: List[Trade], price_data: PriceData, merge_minutes: int, excluded_fiat: List[str]):
+        """
+        TODO: placeholder
+        """
+        self.queue: Dict[str, List[Execution]] = { }
 
         # go over each Trade and split it into its (1 or 2) normalized Executions, building up a queue for each asset type
         for trade in trades:
             logging.debug("Trade ... %s", trade)
 
-            buy, sell = trade.normalize_executions(price_lookup, currency_in, currency_out, price_direct)
+            buy, sell = trade.normalize_executions(price_data)
             if buy is not None and buy.asset not in excluded_fiat:
                 self.enqueue(buy.asset, buy, merge_minutes)
             if sell is not None and sell.asset not in excluded_fiat:
@@ -74,12 +73,15 @@ class MatchQueue:
 
     def enqueue(self, asset: str, execution: Execution, merge_minutes: int):
         """ Add execution to the queue, merging if allowed """
-        queue = self.queue[ asset ]
+        if asset not in self.queue:
+            self.queue[asset] = []
+        queue = self.queue[asset]
 
         # if merging and there is something to merge with
         if merge_minutes > 0 and len(queue) > 0:
             previous = queue[-1]
 
+            # merge condition is in MatchQueue rather than Execution
             if previous.exchange == execution.exchange and previous.side == execution.side and MatchQueue.prices_close(previous, execution) and MatchQueue.times_close(previous, execution, merge_minutes):
                 previous.merge(execution)
                 return

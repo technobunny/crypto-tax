@@ -12,7 +12,7 @@ from functools import partial
 from trade import Trade
 from execution import Execution
 from match import MatchQueue
-
+from price_data import PriceData
 
 
 def convert_date(date: str) -> datetime:
@@ -20,7 +20,7 @@ def convert_date(date: str) -> datetime:
     date_object = datetime.strptime(date, '%Y-%m-%d %H:%M:%S')
     return date_object
 
-def get_price_on_date(price_dictionary: Dict[str, Dict[str, Decimal]], currency: str, date: datetime) -> Decimal:
+def get_price_on_date(price_dictionary: Dict[str, Dict[str, Decimal]], no_warn: List[str], currency: str, date: datetime) -> Decimal:
     """ Obtain the historical price for the currency on the date """
     date_ymd = date.strftime("%Y-%m-%d")
 
@@ -29,7 +29,8 @@ def get_price_on_date(price_dictionary: Dict[str, Dict[str, Decimal]], currency:
         if date_ymd in date_dict:
             return date_dict[ date_ymd ]
 
-    logging.debug("Price alert: %s not found on %s", currency, date)
+    if currency not in no_warn:
+        logging.debug("Price alert: %s not found on %s", currency, date)
     return 0
 
 def get_historical_prices(price_file) -> Dict[str, Dict[str, Decimal]]:
@@ -129,7 +130,8 @@ def main():
 
     price_data: Dict[str, Dict[str, Decimal]] = get_historical_prices(args.prices) if args.prices else {}
     trade_list: List[Trade] = get_trades(args.trades)
-    queue: MatchQueue = MatchQueue(trade_list, partial(get_price_on_date, price_data), args.currency_hist, args.currency_out, int(args.merge_minutes), args.direct, args.fiat)
+    price_data: PriceData = PriceData(partial(get_price_on_date, price_data, args.fiat), args.currency_hist, args.currency_out, args.direct)
+    queue: MatchQueue = MatchQueue(trade_list, price_data, int(args.merge_minutes), args.fiat)
 
     # Now apply a matching strategy, and the results will be a tuple of (matches, leftover executions)
     matches, leftovers = queue.match_fifo() if args.strategy == 'fifo' else queue.match_lifo()

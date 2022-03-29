@@ -2,22 +2,58 @@
 Trades and their related methods
 """
 
-from typing import Tuple, Union, Callable
+from typing import Tuple, Union
 from decimal import Decimal
 from datetime import datetime
 import logging
 
 from execution import Execution
+from price_data import PriceData
 
 class Trade:
     """
     A class that represents a trade, which is potentially cross-currency.
     A trade is represented as X/Y, so pair would be e.g. BTC/ETH or ADA/USD
+
+    Attributes
+    ----------
+    exchange : str
+        the trade exchange
+    date : datetime
+        the trade date
+    asset : str
+        the trade principal asset, i.e. the top of the pair (A in A/B)
+    underlying : str
+        the trade underlying asset, i.e. the bottom of the pair (B in A/B)
+    side : str
+        the trade side (Buy | Sell)
+    quantity : Decicmal
+        the trade quantity denominated in asset
+    alt_qty : Decimal
+        the trade quantity denominated in underlying; if not present, calculated as quantity * price
+    price : Decimal
+        the trade price denominated in underlying
+    fee : Decimal
+        the trade fee denominated in fee_currency
+    fee_currency : Decimal
+        the trade fee currency
+    fee_base : Decimal
+        the trade fee denominated in the currency conversion (PriceData) INPUT currency
+    fee_attached : bool
+        whether or not the fee has been take from the quantity already (True) or not (False).  E.g. Buy 0.5 ETH and fee = 0.005 ETH, fee_attached=True means you have 0.5 ETH held, fee_attached=False means 0.495 ETH.
+
+    Methods
+    -------
+    normalize_executions(price_data)
+        Given a PriceData object to assist with price resolution, splits the Trade into up to 2 Executions, one for asset and one for underlying.
+        One or both may be None if they are the input or output currency, since those do not get matched.
+    modify_fee(execution, fee_out)
+        Attach the fee to the execution, and optionally reduce the execution's quantity by attribute fee.  Only 1 execution should have the fee attached.
     """
+
     def __init__(self, exchange: str, date: datetime, pair: str, side: str, quantity: Decimal, price: Decimal, fee: Decimal, fee_currency: str, fee_base: Decimal, fee_attached: bool, alt_qty: Decimal):
         self.exchange = exchange
         self.date = date
-        self.pair = pair
         self.side = side
         self.price = price
         self.quantity = quantity
@@ -32,7 +68,7 @@ class Trade:
         self.underlying = currencies[1]
         self.asset = currencies[0]
 
-    def normalize_executions(self, price_lookup: Callable[[str, datetime], Decimal], currency_in: str, currency_out: str, direct: bool = False) -> Tuple[Union[Execution, None], Union[Execution, None]]:
+    def normalize_executions(self, price_data: PriceData) -> Tuple[Union[Execution, None], Union[Execution, None]]:
         """ Normalize the executions this trade represents """
 
         if self.side == 'Buy':
@@ -41,6 +77,8 @@ class Trade:
         else:
             buy_quantity = Decimal(self.alt_qty) if self.alt_qty else self.quantity * self.price
             sell_quantity = self.quantity
+
+        logging.debug("Normalizing execution %s %.4f %s @ %s on %s", self.side, self.quantity, f'{self.asset}/{self.underlying}', self.price, self.date)
 
         """
             Say prices are in USD, and output is in JPY.
@@ -76,20 +114,11 @@ class Trade:
         """
 
         # no executions if the currencies are input/output currencies already; they are to be ignored
-        is_asset_inout = self.asset in (currency_out, currency_in)
-        is_underlying_inout = self.underlying in (currency_out, currency_in)
+        is_asset_inout = price_data.is_inout_currency(self.asset)
+        is_underlying_inout = price_data.is_inout_currency(self.underlying)
 
         if is_asset_inout and is_underlying_inout:
             return None, None
-
-        output_conversion = price_lookup(currency_out, self.date) if currency_out != currency_in else Decimal(0)
-        convert = output_conversion if self.asset not in (currency_out, currency_out) else Decimal(0)
-        convert_fee = output_conversion if self.fee_currency != currency_out else Decimal(0)
-
-        underlying_conversion = price_lookup(self.underlying, self.date) if self.underlying != currency_in else Decimal(1)
-        asset_conversion = price_lookup(self.asset, self.date) if self.asset != currency_in else Decimal(1)
-        # the price of the fee w.r.t. currency_in
-        fee_price = price_lookup(self.fee_currency, self.date) if self.fee_currency != currency_in else Decimal(1)
 
         buy: Execution = None
         sell: Execution = None
@@ -97,33 +126,38 @@ class Trade:
         bottom_px: Decimal = None
 
         if not is_asset_inout:
-            top_px = self.price if is_underlying_inout else self.price * underlying_conversion if not direct else asset_conversion
+            # get top_px relative to the output currency
+            top_px_direct, top_px_indirect = price_data.lookup_price(self.date, self.asset, self.underlying)
+            top_px = top_px_indirect * self.price if top_px_indirect else top_px_direct
             if self.side == 'Buy':
-                buy = self.execution_helper('Buy', self.asset, buy_quantity, top_px, convert)
+                buy = Execution(self.exchange, self.date, self.asset, 'Buy', buy_quantity, top_px, Decimal(0))
             else:
-                sell = self.execution_helper('Sell', self.asset, sell_quantity, top_px, convert)
+                sell = Execution(self.exchange, self.date, self.asset, 'Sell', sell_quantity, top_px, Decimal(0))
 
         if not is_underlying_inout:
-            bottom_px = 1/self.price if is_asset_inout else underlying_conversion
+            # 2-arg call to lookup_price means bottom_px_indirect is None, so we ignore it
+            bottom_px_direct, _ = price_data.lookup_price(self.date, self.underlying)
+            bottom_px = bottom_px_direct
             if self.side == 'Buy':
-                sell = self.execution_helper('Sell', self.underlying, sell_quantity, bottom_px, convert)
+                sell = Execution(self.exchange, self.date, self.underlying, 'Sell', sell_quantity, bottom_px, Decimal(0))
             else:
-                buy = self.execution_helper('Buy', self.underlying, buy_quantity, bottom_px, convert)
+                buy = Execution(self.exchange, self.date, self.underlying, 'Buy', buy_quantity, bottom_px, Decimal(0))
 
         """
         Fee handling - it will attach to whichever part of the pair is self.fee_currency if possible.
         AttachTo is BUY if fee_currency == buy_currency OR sell is None or sell_currency == currency_in or currency_out
         Otherwise it is SELL
         """
-        attach_fee_to_buy = buy is not None and ((buy.asset == self.fee_currency) or sell is None or sell.asset in (currency_in, currency_out))
+        attach_fee_to_buy = buy is not None and ((buy.asset == self.fee_currency) or sell is None or price_data.is_inout_currency(sell.asset))
 
         # the actual amount of the fee in output currency
         if self.fee_base > Decimal(0):
-            fee_out = self.fee_base
+            # TODO: this call makes an assumption that fee_base is in INPUT currency
+            fee_out = self.fee_base / price_data.lookup_price(self.date)
         else:
-            fee_out = self.fee * fee_price
-        if currency_in != currency_out:
-            fee_out /= convert_fee
+            fee_out = self.fee * price_data.lookup_price(self.date, self.fee_currency)
+
+        # fee_out /= price_data.lookup_price(self.date, self.fee_currency)
 
         if attach_fee_to_buy:
             self.modify_fee(buy, fee_out)
@@ -138,13 +172,5 @@ class Trade:
             execution.quantity -= self.fee
         execution.fee = fee_out
 
-    def execution_helper(self, side: str, currency: str, quantity: Decimal, price: Decimal, convert: Decimal) -> Execution:
-        """ Common logic to create an execution """
-        if convert != 0:
-            price /= convert
-            logging.debug("  Converted using output price %.4f to %.4f", convert, price)
-
-        return Execution(self.exchange, self.date, currency, side, quantity, price, Decimal(0))
-
     def __str__(self) -> str:
-        return f"{self.pair}: {self.side} {self.quantity} @ {self.price:.4f} (fee {self.fee:.2f}) on {self.exchange}"
+        return f"{self.asset}/{self.underlying}: {self.side} {self.quantity} @ {self.price:.4f} (fee {self.fee:.2f}) on {self.exchange}"
