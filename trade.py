@@ -170,4 +170,4 @@ class Trade:
         execution.fee = fee_out
 
     def __str__(self) -> str:
-        return f"{self.asset}/{self.underlying}: {self.side} {self.quantity} @ {self.price:.4f} (fee {self.fee:.2f}) on {self.exchange}"
+        return f"[{self.date}]  {self.side:4} {self.asset}/{self.underlying} {self.quantity} @ {self.price:.4f} (fee {self.fee:.2f}) on {self.exchange}"

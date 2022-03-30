@@ -43,6 +43,8 @@ def get_historical_prices(price_file) -> PriceDico:
     currency_dict: PriceDico = {}
     currency_idx: Dict[int, str] = {}
 
+    logging.debug('Reading prices from %s', price_file)
+
     lines: List[str]
     try:
         with open(price_file, 'rt', encoding='UTF8') as infile:
@@ -52,26 +54,23 @@ def get_historical_prices(price_file) -> PriceDico:
         return None
 
     first_line = True
-    for line in lines:
-        pcs = line.rstrip().split("\t")
-
+    for date, *values in (line.rstrip().split("\t") for line in lines):
         # if first line, add currencies and indices
         if first_line:
-            for (idx, currency) in enumerate(pcs[1:]):
+            for (idx, currency) in enumerate(values):
                 # only accept XXX OPEN or XXX
                 if ' ' in currency and ' OPEN' not in currency:
                     continue
                 currency = currency.split(' ')[0]
 
-                logging.debug('Found currency %s', currency)
+                logging.debug('  found currency %s', currency)
 
                 currency_idx[idx] = currency
                 currency_dict[currency] = {}
             first_line = False
             continue
         # else set the value of that date, for that currency, to the price.
-        date = pcs[0]
-        for (idx, price) in enumerate(pcs[1:]):
+        for (idx, price) in enumerate(values):
             if idx not in currency_idx:
                 continue
             if price == '':
@@ -81,12 +80,13 @@ def get_historical_prices(price_file) -> PriceDico:
             price_int = Decimal(price)
             currency_dict[currency_idx[idx]][date] = price_int
 
-    # return the dict
     return currency_dict
 
 def get_trades(trade_file) -> List[Trade]:
     """ Read the trade file and convert it into a list of Trades """
     trade_list = []
+
+    logging.debug('Reading trades from %s', trade_file)
 
     try:
         with open(trade_file, 'rt', encoding='UTF8') as infile:
@@ -95,24 +95,23 @@ def get_trades(trade_file) -> List[Trade]:
         logging.error('Trade file not found: %s', trade_file)
         return None
 
-    for line in lines:
-        exchange, date, pair, side, price, quantity, fee, fee_currency, fee_amt_base, fee_attached, *other_qty = line.rstrip().split("\t")
+    for exchange, date, pair, side, price, quantity, fee, fee_currency, fee_amt_base, fee_attached, *other_qty in (line.rstrip().split("\t") for line in lines):
         alt_qty = Decimal(other_qty[0]) if other_qty else None
-        trade_list.append(Trade(exchange, convert_date(date), pair, side, Decimal(quantity.replace(',', '')), Decimal(price.replace(',', '')), Decimal(fee.replace(',', '')), fee_currency, Decimal(fee_amt_base.replace(',', '')), fee_attached == 'True', alt_qty))
+        trade = Trade(exchange, convert_date(date), pair, side, Decimal(quantity.replace(',', '')), Decimal(price.replace(',', '')), Decimal(fee.replace(',', '')), fee_currency, Decimal(fee_amt_base.replace(',', '')), fee_attached == 'True', alt_qty)
+        logging.debug('  found trade %s', trade)
+        trade_list.append(trade)
 
-    # return the dict
     return trade_list
 
 
 def calculate_aggregate(executions: List[Execution]) -> Tuple[Decimal, Decimal, Decimal]:
-    """ Calculate simple aggregate values like total quantity, fees and average price for a list of Executions """
-    total_qty = Decimal(0)
-    total_fees = Decimal(0)
-    total_amt = Decimal(0)
-    for execution in executions:
-        total_qty += execution.quantity
-        total_amt += (execution.quantity * execution.price)
-        total_fees += execution.fee
+    """ Given a list of executions, return the total quantity, average price, and total fees """
+    
+    # comprehension of tuple holding quantity, amount and fee
+    extract = [(execution.quantity, execution.quantity * execution.price, execution.fee) for execution in executions]
+
+    # sum each element pairwise
+    total_qty, total_amt, total_fees = map(sum, zip(*extract))
 
     return total_qty, total_amt / total_qty, total_fees
 
@@ -133,10 +132,22 @@ def main():
 
     args = parser.parse_args()
 
-    logging.basicConfig(level=args.loglevel, format='%(levelname)-8s %(asctime)s %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
+    if args.currency_hist not in args.fiat:
+        args.fiat.append(args.currency_hist)
+    if args.currency_out not in args.fiat:
+        args.fiat.append(args.currency_out)
 
-    logging.debug("Using arguments:")
-    logging.debug(f"  trades   = {args.trades}\n  prices   = {args.prices}\n  currency = {args.currency_hist}\n  ccy out  = {args.currency_out}\n  strategy = {args.strategy}\n  merge    = {args.merge_minutes}")
+    logging.basicConfig(level=args.loglevel, format='%(levelname)-8s %(asctime)s %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
+    logging.debug('Using arguments:')
+    logging.debug('  trades   = %s', args.trades)
+    logging.debug('  prices   = %s', args.prices)
+    logging.debug('  ccy hist = %s', args.currency_hist)
+    logging.debug('  ccy out  = %s', args.currency_out)
+    logging.debug('  fiat     = %s', ', '.join(args.fiat))
+    logging.debug('  strategy = %s', args.strategy)
+    logging.debug('  merging  = %s', args.merge_minutes)
+    logging.debug('  direct   = %s', args.direct)
+    logging.debug('  output   = %s', args.output)
 
     price_data: PriceDico = get_historical_prices(args.prices) if args.prices else {}
     if price_data is None:
