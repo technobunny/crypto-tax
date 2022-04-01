@@ -48,7 +48,7 @@ class PriceData:
         currency_indirect : bool
             whether to use direct or indirect lookup method where possible
         """
-        
+
         self.lookup = price_lookup
         self.currency_in = currency_in
         self.currency_out = currency_out or currency_in

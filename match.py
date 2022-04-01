@@ -3,14 +3,12 @@ Matches and a matching queue (FIFO or LIFO) and associated methods
 """
 
 from typing import Dict, Tuple, List, Callable, Deque
-from decimal import Decimal
 from collections import deque
+from decimal import Decimal
 from datetime import datetime
 import logging
 
 from execution import Execution
-from trade import Trade
-from price_data import PriceData
 
 class Match:
     """
@@ -42,76 +40,46 @@ class Match:
             )
         )
 
-MatchResults = Tuple[List[Match], Dict[str, List[Execution]]]
+
 WaitingQueue = Dict[str, List[Execution]]
+""" An asset-keyed dictionary of Executions in sorted order waiting to be matched """
+
+TransferFees = Dict[str, Decimal]
+""" An asset-keyed dictionary of the total amount of the asset lost to transfer fees """
+
+MatchResults = Tuple[List[Match], WaitingQueue, TransferFees]
+""" Results of matching are a list of Matches, the unmatched Executions, and the costs and fees of transfers """
 
 PeekTop = Callable[[List[Execution]], Execution]
+""" Method that gives the 'top' of a list of Executions for some matching strategy """
+
 TakeTop = Callable[[List[Execution]], Execution]
+""" Method that takes the 'top' of a list of Executions for some matching strategy """
+
 AddTop = Callable[[List[Execution], Execution], None]
+""" Method that adds an Execution to the 'top' of a list of Executions for some matching strategy """
 
 class Matcher:
     """
     A class representing a queue (FIFO, LIFO, etc) for matching
     """
 
-    SECONDS_PER_MINUTE = 60
-    FUZZY_MATCH_PRICE = 0.4
-
-    def __init__(self, trades: List[Trade], price_data: PriceData, merge_minutes: int, excluded_fiat: List[str]):
+    def __init__(self, trades: WaitingQueue, xfer_update: bool = False):
         """
         Parameters
         ----------
-        price_data : PriceData
-            an object used to look up prices
-        merge_minutes : int
-            the number of minutes within which 2 executions can be considered for merging; 0 means do not merge
-        excluded_fiat : List[str]
-            a list of currencies to be excluded from matching, typically fiat since they are not reported
+        trades: List[Execution]
+            a list of the Executions to match, in order of date
         """
-        self.queue: WaitingQueue = {}
 
-        # go over each Trade and split it into its (1 or 2) normalized Executions, building up a queue for each asset type
-        for trade in trades:
-            logging.debug("Trade ... %s", trade)
+        self.queue = trades
+        self.xfer_update = xfer_update
 
-            buy, sell = trade.normalize_executions(price_data)
-            if buy is not None and buy.asset not in excluded_fiat:
-                self.enqueue(buy.asset, buy, merge_minutes)
-            if sell is not None and sell.asset not in excluded_fiat:
-                self.enqueue(sell.asset, sell, merge_minutes)
-
-    def enqueue(self, asset: str, execution: Execution, merge_minutes: int):
-        """ Add execution to the queue, merging if allowed """
-        if asset not in self.queue:
-            self.queue[asset] = []
-        queue = self.queue[asset]
-
-        # if merging and there is something to merge with
-        if merge_minutes > 0 and len(queue) > 0:
-            previous = queue[-1]
-
-            # merge condition is in Matcher rather than Execution
-            if previous.exchange == execution.exchange and previous.side == execution.side and Matcher.prices_close(previous, execution) and Matcher.times_close(previous, execution, merge_minutes):
-                previous.merge(execution)
-                return
-        queue.append(execution)
-
-    @classmethod
-    def prices_close(cls, first: Execution, second: Execution) -> bool:
-        """ Return True if the prices are within a certain % of each other """
-        return abs(first.price - second.price) / first.price < Matcher.FUZZY_MATCH_PRICE
-
-    @classmethod
-    def times_close(cls, first: Execution, second: Execution, minutes: int) -> bool:
-        """ Return True if the execution times are within a certain range of each other """
-        time_delta = first.date - second.date
-        seconds = abs(time_delta.days * 86400 + time_delta.seconds)
-        return seconds < minutes * Matcher.SECONDS_PER_MINUTE
-
-    def match_fifo_lifo(self, peek_top: PeekTop, take_top: TakeTop, add_top: AddTop) -> MatchResults:
+    def __match_fifo_lifo(self, peek_top: PeekTop, take_top: TakeTop, add_top: AddTop) -> MatchResults:
         """ Match using fifo / lifo """
         matches: List[Match] = []
         leftovers: WaitingQueue = {}
+        xfer_fees: TransferFees = {}
 
         for (currency, executions) in self.queue.items():
             queue: Deque[Execution] = deque()
@@ -119,6 +87,33 @@ class Matcher:
                 # if queue is empty, or top is same side, add
                 if len(queue) == 0 or peek_top(queue).side == execution.side:
                     queue.append(execution)
+                elif execution.side == 'Transfer':
+                    if not execution.asset in xfer_fees:
+                        xfer_fees[execution.asset] = 0
+
+                    if self.xfer_update:
+                        while True:
+                            first = take_top(queue)
+                            min_qty = min(first.quantity, execution.quantity)
+                            # we WILL possibly lose any remaining fees with xfer_update.
+                            # if the quantity of the xfer wipes out first's quantity, that's it - he's gone, along with any fee fraction he had
+                            # in a way it makes sense - 1 buy then 3 sells must split the buy's fee proportionally across the matches, so there could be some left over; you can't give the first match ALL the fee
+                            # so if a transfer comes in right after and snipes the last qty from the buy, to whom does the last bit of fee go?  Which match?
+                            first.quantity -= min_qty
+                            execution.quantity -= min_qty
+
+                            if execution.quantity <= 0 and first.quantity <= 0:
+                                break
+                            if execution.quantity <= 0:
+                                add_top(queue, first)
+                                break
+                            # if the queue is EMPTY, we can add execution and break; else go back to top of loop
+                            if len(queue) == 0:
+                                logging.error('Transfer was going to be 1st thing on queue so has been ignored  for %s', execution.asset)
+                                queue.append(execution)
+                                break
+                    else:
+                        xfer_fees[execution.asset] += execution.quantity
                 else:
                     # go from element 0 to top
                     while True:
@@ -161,12 +156,12 @@ class Matcher:
             if len(queue) > 0:
                 leftovers[currency] = list(queue)
 
-        return matches, leftovers
+        return matches, leftovers, xfer_fees
 
     def match_fifo(self) -> MatchResults:
         """ Match using a FIFO strategy """
-        return self.match_fifo_lifo(lambda x: x[0], lambda x: x.popleft(), lambda x, y: x.appendleft(y))
+        return self.__match_fifo_lifo(lambda x: x[0], lambda x: x.popleft(), lambda x, y: x.appendleft(y))
 
     def match_lifo(self) -> MatchResults:
         """ Match using a LIFO strategy """
-        return self.match_fifo_lifo(lambda x: x[-1], lambda x: x.pop(), lambda x, y: x.append(y))
+        return self.__match_fifo_lifo(lambda x: x[-1], lambda x: x.pop(), lambda x, y: x.append(y))

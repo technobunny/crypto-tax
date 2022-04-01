@@ -1,5 +1,14 @@
 # Changelog
 
+## v1.0.2 - 2022-04-01
+
+### Added
+- Transfer support to update quantities between matches
+
+### Changed
+- Refactored match.py so it gets only executions coming in
+- Changed method names to indicate 'private'
+
 ## v1.0.1 - 2022-03-28
 
 ### Added

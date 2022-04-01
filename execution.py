@@ -16,14 +16,14 @@ class Execution:
         self.date = date
         self.side = side
         self.asset = asset
-        self.quantity = quantity
+        self.quantity = quantity if side != 'Transfer' else fee
         self.price = price
         self.fee = fee
         self.merged = False
 
     def merge(self, other) -> None:
         """ Merge this object with other if possible """
-        if isinstance(other, Execution):
+        if isinstance(other, Execution) and other.side != 'Transfer':
             if self.price != other.price:
                 self.price = ((self.price * self.quantity) + (other.price * other.quantity)) / (self.quantity + other.quantity)
             self.quantity += other.quantity
@@ -31,4 +31,6 @@ class Execution:
             self.merged = True
 
     def __str__(self) -> str:
-        return f"{self.asset}: {self.side} {self.quantity:.4f} @ {self.price:.4f} (fee {self.fee:.4f}) on {self.exchange} [Merged = {self.merged}]"
+        if self.side == 'Transfer':
+            return f'{self.asset}: {self.side} {self.quantity:.4f} between {self.exchange} for {self.fee} {self.asset}'
+        return f'{self.asset}: {self.side} {self.quantity:.4f} @ {self.price:.4f} (fee {self.fee:.4f}) on {self.exchange} [Merged = {self.merged}]'

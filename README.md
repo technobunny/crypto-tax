@@ -52,6 +52,21 @@ You also must sort the data by date.  A simple way to do this in Linux might be
 cat trades_unsorted.csv | sort -t$'\t' -k2 > trades.csv
 ```
 
+### Transfers
+```csv
+Destination Source  TransferDate  Asset Quantity  Fee
+```
+All fields are `TAB` separated.
+
+* **Destination**: destination of the transfer
+* **Source**: source of the transfer
+* **TransferDate**: the date the transfer occurred in YYYY-mm-dd HH:MM:SS format.  No time zone is assumed.
+* **Asset**: the asset trasnferred
+* **Quantity**: the quantity of the transfer
+* **Fee**: the fee associated with the transfer, denominated in units of the asset itself
+
+As of today (1.0.2) Destination, Source and Quantity are unused.  However they may be used in the future, so this format includes them.
+
 ### Historic Prices
 
 If you are cross-crypto trading, you will probably need to use historic prices and specify the file with `--prices prices.csv`
@@ -130,8 +145,8 @@ ETH : 5 @ USD 1700.7911 with USD 2.71 fees
 Full usage information is available with the `-h` switch.
 
 ```bash
-usage: crypto_taxes.py [-h] -t TRADES [-p PRICES]
-                       [--currency-hist CURRENCY_HIST]
+usage: crypto_taxes.py [-h] -t TRADES [-p PRICES] [-x TRANSFERS]
+                       [--xfer-update] [--currency-hist CURRENCY_HIST]
                        [--currency-out CURRENCY_OUT] [-s {fifo,lifo}]
                        [-m MERGE_MINUTES] [--fiat FIAT] [-d]
                        [-o {match,basis,unmatched,summary}] [-v]
@@ -144,7 +159,11 @@ optional arguments:
                         filename for trade data
   -p PRICES, --prices PRICES
                         optional filename for historical price data (default =
-                        none
+                        none)
+  -x TRANSFERS, --transfers TRANSFERS
+                        optional filename for transfer data (default = none)
+  --xfer-update         transfer fees update execution quantities (default
+                        = False)
   --currency-hist CURRENCY_HIST
                         the currency the prices file is in (default = USD)
   --currency-out CURRENCY_OUT
@@ -162,6 +181,7 @@ optional arguments:
                         show matches, basis, unmatched executions, or
                         basis+unmatched executions
   -v, --verbose         increase output verbosity
+
 ```
 
 All of it except `-d, --direct` should be self-explanatory.  In the next section I'll discuss it in more detail.
@@ -198,6 +218,27 @@ Direct calculation means we say A's price is `lookup(A)` as well.  We *directly*
 
 Indirect calculation means we say A's price is `lookup(B) * trade price`.  That is, we *indirectly* get A's price as the price of B multiplied by A's price relative to B as written in the trade.  This is much more accurate than the direct method because you gain back 1 degree of freedom in the pricing (trade price).
 
+### Transfers
+
+Transfers of cryptocurrency from wallet to wallet, while untaxed, generally have a fee associated with them which is denominated in the unit of the cryptocurrency being moved.  This has an effect on the available quantity of that asset from that point forwards.
+
+We therefore take 3 approaches to dealing with transfers and the quantity reduction.
+
+Take an example where we have an asset and perform 4 actions
+
+1. Buy 1@100
+1. Transfer with fee 0.1
+1. Buy 1@200
+1. Sell 1@100
+
+Options:
+1. No `--transfers=X` - transfer is ignored, #1 and #4 match for 0 profit, we have 1.0 quantity remaining
+1. `--transfers=X` - transfers are used, but only for the basis, not matching.  #1 and #4 match for 0 profit, we have an unmatched Buy 1@200 remaining, but for the basis we acknowledge that we only have 0.9 quantity *actually* left over.
+1. `--transfers=X, --xfer-update` - transfers are essentially "sells", reducing a Buy execution's leftover quantity, but do not contribute to profit or loss.  #1 would match #2 for 0.1, so when #4 is seen it can only match #1 for the remaining 0.9 quantity.  The leftover 0.1 would match with #3 leading to a loss of -10 to report.
+
+#2 should be generally OK, as in practice transfer fees are so small relative to trade quantities.  As well it is not possible for the script to report an over-sell, since real life quantities **do** reflect the transfer fee loss.  We are safe there.
+
+However #3 is probably closer to what has actually occurred.  Use your judgment on which is appropriate for your case.  Both will show your final basis and total amounts executed identically.  The only difference will be very slight in terms of match quantities on an individual basis, which will maybe swing the P&L by a couple dollars because it is dependent upon buy and sell prices of the matched executions.
 
 <p align="right">(<a href="#top">back to top</a>)</p>
 
@@ -207,12 +248,12 @@ Indirect calculation means we say A's price is `lookup(B) * trade price`.  That 
 Feature-wise, it is complete at the moment.  However, there are some nice-to-haves.
 
 - [ ] FIX: decimal rounding of quantities caused by not having quantity of both currencies in the trade
-- [ ] IMPROVE: Refactor to use best practices and more Pythonic idioms
+- [x] IMPROVE: Refactor to use best practices and more Pythonic idioms
 - [ ] ADD: support for a more granular historical price chart
 - [ ] ADD: ability to query a historical price feed
 - [ ] ADD: ability to remove exchange name from output
-- [ ] IMPROVE: verbose output so it can be used to audit the calculations
-- [ ] ADD: support for transfer fees / null trades that affect the available quantity from that date (cleans up matching)
+- [x] IMPROVE: verbose output so it can be used to audit the calculations
+- [x] ADD: support for transfer fees / null trades that affect the available quantity from that date (cleans up matching)
 - [ ] ADD: tests :)
 - [ ] ADD: an input column for the price in output currency (for example if pair is BTC/ETH but your exchange reported to you that 1 BTC was $42,341 at the time of the trade).  Then no lookups are needed for either price.  But few exchanges do this.
 - [x] ADD: an input column for the quantity of the base in the pair (for example if pair is BTC/ETH, the quantity of the trade in ETH)
