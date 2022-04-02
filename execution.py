@@ -7,7 +7,9 @@ from datetime import datetime
 class Execution:
     """
     A class that represents a normalized execution.
-    A normalized execution is a single asset denominated in fiat currency.  Today this is set to USD
+    A normalized execution is a single asset denominated in fiat currency.
+    Generally the side is either 'Buy', 'Sell' or 'Transfer'.
+    A transfer has no price, isn't merged.
     """
 
     # fee_base should be 0 if the fee was taken directly in fiat.  If the fee was in this cryptocurrency, set to non-zero.  Not supported: fee in another cryptocurrency
@@ -16,7 +18,7 @@ class Execution:
         self.date = date
         self.side = side
         self.asset = asset
-        self.quantity = quantity if side != 'Transfer' else fee
+        self.quantity = quantity
         self.price = price
         self.fee = fee
         self.merged = False

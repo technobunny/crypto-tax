@@ -70,6 +70,8 @@ class Matcher:
         ----------
         trades: List[Execution]
             a list of the Executions to match, in order of date
+        xfer_update: bool
+            True to have transfer fees match in situ, effectively updating a preceding buy's remaining quantity
         """
 
         self.queue = trades
@@ -94,17 +96,17 @@ class Matcher:
                     if self.xfer_update:
                         while True:
                             first = take_top(queue)
-                            min_qty = min(first.quantity, execution.quantity)
+                            min_qty = min(first.quantity, execution.fee)
                             # we WILL possibly lose any remaining fees with xfer_update.
                             # if the quantity of the xfer wipes out first's quantity, that's it - he's gone, along with any fee fraction he had
                             # in a way it makes sense - 1 buy then 3 sells must split the buy's fee proportionally across the matches, so there could be some left over; you can't give the first match ALL the fee
                             # so if a transfer comes in right after and snipes the last qty from the buy, to whom does the last bit of fee go?  Which match?
                             first.quantity -= min_qty
-                            execution.quantity -= min_qty
+                            execution.fee -= min_qty
 
-                            if execution.quantity <= 0 and first.quantity <= 0:
+                            if execution.fee <= 0 and first.quantity <= 0:
                                 break
-                            if execution.quantity <= 0:
+                            if execution.fee <= 0:
                                 add_top(queue, first)
                                 break
                             # if the queue is EMPTY, we can add execution and break; else go back to top of loop
