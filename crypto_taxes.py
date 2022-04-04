@@ -1,9 +1,6 @@
-"""
-This is a script that helps you do your taxes, hopefully.  Let me know if it helped you.
-"""
+"""This is a script that helps you do your taxes, hopefully.  Let me know if it helped you."""
 
-import sys
-from typing import Dict, List, Tuple
+from itertools import groupby
 from decimal import Decimal
 from datetime import datetime
 from argparse import ArgumentParser
@@ -12,46 +9,50 @@ from functools import partial
 
 from trade import Trade
 from execution import Execution
-from match import Matcher, WaitingQueue
+from match import Matcher, Match, TransferFees, WaitingQueue
 from price_data import PriceData
 
-PriceDico = Dict[str, Dict[str, Decimal]]
+"""TODO: determine if file reading and object creation should be done in the module closer to the object"""
+
+SECONDS_PER_MINUTE = 60
+FUZZY_MATCH_PRICE = 0.4
+
+PriceDict = dict[str, dict[str, Decimal]]
 
 def convert_date(date: str) -> datetime:
-    """ Convert a string representing a date and time to a datetime object """
+    """Convert a string representing a date and time to a datetime object"""
     date_object = datetime.strptime(date, '%Y-%m-%d %H:%M:%S')
     return date_object
 
-def get_price_on_date(price_dictionary: PriceDico, no_warn: List[str], currency: str, date: datetime) -> Decimal:
-    """ Obtain the historical price for the currency on the date """
+def get_price_on_date(price_dictionary: PriceDict, currency: str, date: datetime) -> Decimal:
+    """Obtain the historical price for the currency on the date."""
     date_ymd = date.strftime("%Y-%m-%d")
 
-    if currency in price_dictionary:
-        date_dict = price_dictionary[ currency ]
-        if date_ymd in date_dict:
-            return date_dict[ date_ymd ]
-
-    if currency not in no_warn:
+    try:
+        return price_dictionary[currency][date_ymd]
+    except KeyError:
         logging.debug("Price alert: %s not found on %s", currency, date)
+
     return 0
 
-def get_historical_prices(price_file) -> PriceDico:
-    """
-    Read a file and return a 2 level hashmap of currency -> date -> price
-    """
-
-    currency_dict: PriceDico = {}
-    currency_idx: Dict[int, str] = {}
-
-    logging.debug('Reading prices from %s', price_file)
-
-    lines: List[str]
+def read_file(file_name: str) -> list[str]:
+    """Read a file and slurp the lines"""
+    logging.debug('Reading from %s', file_name)
+    lines = []
     try:
-        with open(price_file, 'rt', encoding='UTF8') as infile:
+        with open(file_name, 'rt', encoding='UTF8') as infile:
             lines = infile.readlines()
     except FileNotFoundError:
-        logging.error('Price file not found: %s', price_file)
-        return None
+        logging.error('File not found: %s', file_name)
+    return lines
+
+def get_historical_prices(price_file: str) -> PriceDict:
+    """Read a file and return a 2 level hashmap of currency -> date -> price"""
+
+    currency_dict: PriceDict = {}
+    currency_idx: dict[int, str] = {}
+
+    lines = read_file(price_file)
 
     first_line = True
     for date, *values in (line.rstrip().split("\t") for line in lines):
@@ -82,19 +83,11 @@ def get_historical_prices(price_file) -> PriceDico:
 
     return currency_dict
 
-def get_trades(trade_file) -> List[Trade]:
-    """ Read the trade file and convert it into a list of Trades """
+def get_trades(trade_file: str) -> list[Trade]:
+    """Read the trade file and convert it into a list of Trades"""
     trade_list = []
 
-    logging.debug('Reading trades from %s', trade_file)
-
-    try:
-        with open(trade_file, 'rt', encoding='UTF8') as infile:
-            lines = infile.readlines()
-    except FileNotFoundError:
-        logging.error('Trade file not found: %s', trade_file)
-        return None
-
+    lines = read_file(trade_file)
     for exchange, date, pair, side, price, quantity, fee, fee_currency, fee_amt_base, fee_attached, *other_qty in (line.rstrip().split("\t") for line in lines):
         alt_qty = Decimal(other_qty[0]) if other_qty else None
         trade = Trade(exchange, convert_date(date), pair, side, Decimal(quantity.replace(',', '')), Decimal(price.replace(',', '')), Decimal(fee.replace(',', '')), fee_currency, Decimal(fee_amt_base.replace(',', '')), fee_attached == 'True', alt_qty)
@@ -103,22 +96,13 @@ def get_trades(trade_file) -> List[Trade]:
 
     return trade_list
 
-
-def get_transfers(transfer_file) -> WaitingQueue:
-    """ Read the transfer file and convert it into a list of Transfers """
+def get_transfers(transfer_file: str) -> WaitingQueue:
+    """Read the transfer file and convert it into a list of Transfers"""
     transfers: WaitingQueue = {}
 
-    logging.debug('Reading transfers from %s', transfer_file)
-
-    try:
-        with open(transfer_file, 'rt', encoding='UTF8') as infile:
-            lines = infile.readlines()
-    except FileNotFoundError:
-        logging.error('Transfer file not found: %s', transfer_file)
-        return transfers
-
-    for date, dest, src, asset, quantity, fee in (line.rstrip().split("\t") for line in lines):
-        transfer = Execution(f'{src}/{dest}', convert_date(date), asset, 'Transfer', Decimal(quantity.replace(',', '')), None, Decimal(fee.replace(',', '')))
+    lines = read_file(transfer_file)
+    for date, dest, src, asset, _, fee in (line.rstrip().split("\t") for line in lines):
+        transfer = Execution(f'{src}/{dest}', convert_date(date), asset, 'Transfer', quantity=Decimal(fee.replace(',', '')))
         logging.debug('  found transfer %s', transfer)
         if not asset in transfers:
             transfers[asset] = []
@@ -126,74 +110,87 @@ def get_transfers(transfer_file) -> WaitingQueue:
 
     return transfers
 
-
-def calculate_aggregate(executions: List[Execution]) -> Tuple[Decimal, Decimal, Decimal]:
-    """ Given a list of executions, return the total quantity, average price, and total fees """
-
-    # comprehension of tuple holding quantity, amount and fee
-    extract = [(execution.quantity, execution.quantity * execution.price, execution.fee) for execution in executions]
-
-    # sum each element pairwise
-    total_qty, total_amt, total_fees = map(sum, zip(*extract))
+def calculate_aggregate(executions: list[Execution]) -> tuple[Decimal, Decimal, Decimal]:
+    """Given a list of executions, return the total quantity, average price, and total fees"""
+    total_qty = 0
+    total_amt = 0
+    total_fees = 0
+    for execution in executions:
+        total_qty += execution.quantity
+        total_amt += execution.quantity * execution.price
+        total_fees += execution.fee
 
     return total_qty, total_amt / total_qty, total_fees
 
-def split_trades(trades: List[Trade], prices: PriceData, transfers: WaitingQueue, merge_minutes: int, excl_fiat: List[str]) -> WaitingQueue:
-    """ go over each Trade and split it into its (1 or 2) normalized Executions, building up a queue for each asset type """
-    executions: WaitingQueue = {}
-
-    for trade in trades:
-        buy, sell, sell_fee = trade.normalize_executions(prices)
-        if buy is not None and buy.asset not in excl_fiat:
-            if not buy.asset in executions:
-                executions[buy.asset] = []
-            enqueue(executions[buy.asset], buy, merge_minutes)
-        if sell is not None and sell.asset not in excl_fiat:
-            if not sell.asset in executions:
-                executions[sell.asset] = []
-            enqueue(executions[sell.asset], sell, merge_minutes)
-        if sell_fee is not None:
-            if not sell_fee.asset in executions:
-                executions[sell_fee.asset] = []
-            enqueue(executions[sell_fee.asset], sell_fee, merge_minutes)
-
-    # add transfers if any
-    for asset, asset_transfers in transfers.items():
-        if not asset in executions:
-            executions[asset] = []
-        executions[asset] = sorted(executions[asset] + asset_transfers, key=lambda x: x.date)
-
+def split_trades(trades: list[Trade], prices: PriceData, excl_fiat: list[str]) -> list[Execution]:
+    """Go over each Trade and split it into its (1 or 2) normalized Executions, building up a queue for each asset type"""
+    executions: list[Execution] = [
+        trade for trade in
+            # flatten normalized execution tuple
+            sum([trade.normalize_executions(prices) for trade in trades], ())
+        # filter out None and excluded
+        if trade is not None and trade.asset not in excl_fiat
+    ]
     return executions
 
-def enqueue(queue: List[Execution], execution: Execution, merge_minutes: int) -> None:
-    """ Add execution to the queue, merging if allowed """
-    # if merging and there is something to merge with
-    if merge_minutes > 0 and len(queue) > 0:
-        previous = queue[-1]
+def merge_executions(executions: WaitingQueue, merge_minutes: int) -> WaitingQueue:
+    """Create a new dict where the executions for each asset have been merged if they meet certain criteria"""
+    merged_executions: WaitingQueue = { asset: merge_executions_helper(asset_executions, merge_minutes) for asset, asset_executions in executions.items() }
+    return merged_executions
 
-        # merge condition is in Matcher rather than Execution
-        if previous.exchange == execution.exchange and previous.side == execution.side and prices_close(previous, execution) and times_close(previous, execution, merge_minutes):
-            previous.merge(execution)
-            return
-    queue.append(execution)
+def merge_executions_helper(executions: list[Execution], merge_minutes: int) -> list[Execution]:
+    """Given a list of executions, create a new minimized/merged list based on attribute closeness criteria"""
+    # add each execution, comparing to top
+    merged_execution_list: list[Execution] = []
+    for execution in executions:
+        if merged_execution_list and merge_minutes:
+            previous = merged_execution_list[-1]
+            if previous.exchange == execution.exchange and previous.side == execution.side and are_prices_close(previous, execution) and are_times_close(previous, execution, merge_minutes):
+                previous.merge(execution)
+                continue
+        # append if we didn't merge
+        merged_execution_list.append(execution)
+    return merged_execution_list
 
-SECONDS_PER_MINUTE = 60
-FUZZY_MATCH_PRICE = 0.4
+def merge_transfers(executions: WaitingQueue, transfers: WaitingQueue) -> WaitingQueue:
+    """Merge dicts of executions and transfers together, sorting by date"""
+    merged: WaitingQueue = { asset: sorted(executions[asset] + transfers.get(asset, []), key=lambda x: x.date) for asset in executions.keys() }
+    return merged
 
-def prices_close(first: Execution, second: Execution) -> bool:
-    """ Return True if the prices are within a certain % of each other """
-    return abs(first.price - second.price) / first.price < FUZZY_MATCH_PRICE
+def are_prices_close(first: Execution, second: Execution) -> bool:
+    """Return True if the prices are within a certain % of each other"""
+    return abs(first.price - second.price) / first.price < FUZZY_MATCH_PRICE if first.price else False
 
-def times_close(first: Execution, second: Execution, minutes: int) -> bool:
-    """ Return True if the execution times are within a certain range of each other """
+def are_times_close(first: Execution, second: Execution, minutes: int) -> bool:
+    """Return True if the execution times are within a certain range of each other"""
     time_delta = first.date - second.date
     seconds = abs(time_delta.days * 86400 + time_delta.seconds)
     return seconds < minutes * SECONDS_PER_MINUTE
 
+def print_output(matches: list[Match], leftovers: WaitingQueue, transfer_fees: TransferFees, output_type: str, currency_out: str):
+    """Print matches, unmatched executions, and the basis"""
+    # Print matches
+    if output_type == 'match':
+        for match in matches:
+            print(str(match))
+    else:
+        for currency in sorted(leftovers.keys()):
+            executions = leftovers[currency]
+            if len(executions) == 0:
+                continue
+            # get total quantity, average price, and total fees
+            if output_type in ('basis', 'summary'):
+                total_qty, avg_px, total_fees = calculate_aggregate(executions)
+                total_qty -= transfer_fees[currency] if currency in transfer_fees else 0
+                print(f"{currency} : {total_qty:.4f} @ {currency_out} {avg_px:.4f} with {currency_out} {total_fees:.2f} fees")
+            if output_type in ('unmatched', 'summary'):
+                for execution in executions:
+                    print(f"  {execution}")
+
 
 ### Main ###
 def main():
-    """ Entry point """
+    """Entry point to the application"""
     parser = ArgumentParser(description='IRS Form 8949 FIFO Matching')
     parser.add_argument('-t', '--trades', type=str, required=True, help='filename for trade data')
     parser.add_argument('-p', '--prices', type=str, help='optional filename for historical price data (default = none)')
@@ -228,43 +225,24 @@ def main():
     logging.debug('  direct    = %s', args.direct)
     logging.debug('  output    = %s', args.output)
 
-    price_data: PriceDico = get_historical_prices(args.prices) if args.prices else {}
-    if price_data is None:
-        sys.exit(-1)
-
-    trade_list: List[Trade] = get_trades(args.trades)
-    if trade_list is None:
-        sys.exit(-1)
-
+    # Get data
+    price_data: PriceDict = get_historical_prices(args.prices) if args.prices else {}
+    trade_list: list[Trade] = get_trades(args.trades)
     transfers: WaitingQueue = get_transfers(args.transfers) if args.transfers else {}
+    price_data: PriceData = PriceData(partial(get_price_on_date, price_data), args.currency_hist, args.currency_out, args.direct)
 
-    price_data: PriceData = PriceData(partial(get_price_on_date, price_data, args.fiat), args.currency_hist, args.currency_out, args.direct)
+    # Manipulate, filter and massage data.  Opting for functional methods instead of mutations
+    raw_executions: list[Execution] = split_trades(trade_list, price_data, args.fiat)
+    raw_executions_dict: WaitingQueue = { k: list(v) for k, v in groupby(sorted(raw_executions, key=lambda y: y.asset), lambda x: x.asset) }
+    merged_executions_dict: WaitingQueue = merge_executions(raw_executions_dict, args.merge_minutes)
+    executions: WaitingQueue = merge_transfers(merged_executions_dict, transfers)
 
-    # convert trades to executions and filter fiats if needed
-    executions: WaitingQueue = split_trades(trade_list, price_data, transfers, args.merge_minutes, args.fiat)
-
+    # Begin matching
     queue: Matcher = Matcher(executions, args.xfer_update)
-
-    # Now apply a matching strategy, and the results will be a tuple of (matches, leftover executions)
     matches, leftovers, transfer_fees = queue.match_fifo() if args.strategy == 'fifo' else queue.match_lifo()
 
-    # Print matches
-    if args.output == 'match':
-        for match in matches:
-            print(str(match))
-    else:
-        for currency in sorted(leftovers.keys()):
-            executions = leftovers[currency]
-            if len(executions) == 0:
-                continue
-            # get total quantity, average price, and total fees
-            if args.output in ('basis', 'summary'):
-                total_qty, avg_px, total_fees = calculate_aggregate(executions)
-                total_qty -= transfer_fees[currency] if currency in transfer_fees else 0
-                print(f"{currency} : {total_qty:.4f} @ {args.currency_out} {avg_px:.4f} with {args.currency_out} {total_fees:.2f} fees")
-            if args.output in ('unmatched', 'summary'):
-                for execution in executions:
-                    print(f"  {execution}")
+    # Output
+    print_output(matches, leftovers, transfer_fees, args.output, args.currency_out)
 
 if __name__ == '__main__':
     main()

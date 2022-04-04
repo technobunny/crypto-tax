@@ -1,26 +1,24 @@
-IRS 8949 Matching for Crypto
-
 <!-- ABOUT THE PROJECT -->
 ## About The Project
 
-A small Python application to help you manage your cryptocurrency trades, since most exchanges don't do it for you.
+A small Python application to help you manage your cryptocurrency trades for reporting to the IRS, since most exchanges don't do it for you.
 
-This application performs execution matching for you and outputs the matches to STDOUT.  The matches are then ready to be entered onto IRS Form 8949 (long or short term, depending on time between open and close dates).
+This application performs execution matching for you and outputs the matches to `STDOUT`.  The matches are then ready to be entered onto IRS Form 8949 (long or short term, depending on time between open and close dates).
 
-Both crypto-fiat (e.g. BTC/USD) and crypto-crypto (e.g. BTC/ETH) are supported.
+All pairs are supported.
 
 
 
 <!-- GETTING STARTED -->
 ## Getting Started
 
-This application uses basic Python 3 and no extra libraries, so you can just jump right in.
+This application uses basic Python 3 (v3.9) and no extra libraries, so you can just jump right in.
 
 When I say basic Python 3, I mean it.  This is me learning Python over a few days, so forgive the mess.
 
 ### Prerequisites
 
-Python3
+Python 3.9
 
 
 ## Data Format
@@ -36,7 +34,7 @@ All fields are `TAB` separated.
 * **Exchange**: any string
 * **TradeDate**: the date the trade occurred in YYYY-mm-dd HH:MM:SS format.  No time zone is assumed.
 * **Pair**: the trading pair, such as BTC/USD or ETH/DOGE
-* **Side**: the side, either Buy or Sell
+* **Side**: the side, one of Buy, Sell or Transfer
 * **Price**: the price of the asset bought/sold (top of the pair) *denominated in the bottom of the pair*.  So BTC/ETH would have a price of e.g. 14 if 1 BTC = 14 ETH.  This is **not** the trade amount, and **not** always USD.
 * **Quantity**: the quantity of the asset bought/sold denominated in the asset
 * **Fee**: the fee for the trade, denominated in fee currency
@@ -247,8 +245,8 @@ However #3 is probably closer to what has actually occurred.  Use your judgment 
 
 Feature-wise, it is complete at the moment.  However, there are some nice-to-haves.
 
-- [ ] FIX: decimal rounding of quantities caused by not having quantity of both currencies in the trade
-- [x] IMPROVE: Refactor to use best practices and more Pythonic idioms
+- ~~[ ] FIX: decimal rounding of quantities caused by not having quantity of both currencies in the trade~~
+- [x] IMPROVE: refactor to use best practices and more Pythonic idioms
 - [ ] ADD: support for a more granular historical price chart
 - [ ] ADD: ability to query a historical price feed
 - [ ] ADD: ability to remove exchange name from output
@@ -257,6 +255,7 @@ Feature-wise, it is complete at the moment.  However, there are some nice-to-hav
 - [ ] ADD: tests :)
 - [ ] ADD: an input column for the price in output currency (for example if pair is BTC/ETH but your exchange reported to you that 1 BTC was $42,341 at the time of the trade).  Then no lookups are needed for either price.  But few exchanges do this.
 - [x] ADD: an input column for the quantity of the base in the pair (for example if pair is BTC/ETH, the quantity of the trade in ETH)
+- [ ] IMPROVE: further cleanups and code documentation
 
 See the [open issues](https://github.com/technobunny/crypto-tax/issues) for a full list of proposed features (and known issues).
 

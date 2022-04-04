@@ -1,16 +1,14 @@
-"""
-A module to hold price-related information, such as lookup, in/out currencies, etc.
-"""
+"""A module to hold price-related information, such as lookup, in/out currencies, etc."""
 
-from typing import Callable, Tuple
 from datetime import datetime
 from decimal import Decimal
+from typing import Callable
 
 PriceLookup = Callable[[str, datetime], Decimal]
 
 class PriceData:
-    """
-    A class that encapsulates price information and actions.
+    """A class that encapsulates price information and actions.
+
     Manages how prices are looked up, and then resolved to a final output currency price.
     Attributes
     ----------
@@ -25,7 +23,7 @@ class PriceData:
 
     Methods
     -------
-    lookup_price(date, currency=None, base_currency=None)
+    lookup_price(date, currency=None, base_currency=None, units=None)
         Retrieves the price on the date of the specified currency (currency_out if not specified) in terms of the output currency or base_currency
     is_input_currency(currency)
         True if the currency is this PriceData's input currency, False otherwise
@@ -52,15 +50,11 @@ class PriceData:
         self.lookup = price_lookup
         self.currency_in = currency_in
         self.currency_out = currency_out or currency_in
-        self.currency_direct = currency_direct or False
+        self.currency_direct = currency_direct
 
-    def lookup_price(self, date: datetime, currency: str = None, base_currency: str = None) -> Tuple[Decimal, Decimal]:
-        """
-        Return the currency's historic price on the date relative to both attribute currency_out and the base_currency.
 
-        The tuple will have exactly one non-None value, depending on the value of base_currency and the attribute currency_direct.
-        If currency_direct is True or base_currency is None, the value is (price_direct, None).
-        If currency_direct is False and base_currency is not None, the value is (None, price_indirect)
+    def lookup_price(self, date: datetime, currency: str = None, base_currency: str = None, units: Decimal = None) -> Decimal:
+        """Return the currency's price relative to the output currency.
 
         Parameters
         ----------
@@ -70,36 +64,34 @@ class PriceData:
             the currency for which to get the price.  If not provided, uses attribute currency_out
         base_currency: str
             the currency to use for indirect calculation.  If not provided, direct price is calculated even if attribute currency_direct = False
+        units: Decimal
+            for indirect calculations, this is the # of units of base_currency that currency costs
         """
-        if currency is None:
-            currency = self.currency_out
 
-        if self.is_output_currency(currency):
-            return Decimal(1), None
-        output_price = self.lookup(self.currency_out, date) or Decimal(1)
-        if self.is_inout_currency(currency):
-            return output_price, None
+        # Output as-is
+        if currency is None or self.is_output_currency(currency):
+            return Decimal(1)
 
-        direct_price = self.lookup(currency, date) / output_price if self.currency_direct or base_currency is None else None
-        indirect_price = None
+        # Input to output (1 out = X in), then we should use EITHER the provided units, OR the lookup (preferring provided units)
+        input_to_output_price = self.lookup(self.currency_out, date) if self.currency_out != self.currency_in else Decimal(1)
+        if self.is_input_currency(currency):
+            return units or input_to_output_price
 
-        if direct_price is None:
-            if base_currency == currency or self.is_inout_currency(base_currency):
-                indirect_price = Decimal(1)
-            else:
-                indirect_price = self.lookup(base_currency, date)
-            indirect_price /= output_price
+        # A/B pair.  Divide by IO price, since lookup(A) means 1A = X in, and IO means 1O = X in.  Lookup(A) / IO -> A/in / O/in -> A/in * in/O -> A/O
+        if self.currency_direct or base_currency is None:
+            return self.lookup(currency, date) / input_to_output_price
 
-        return direct_price, indirect_price
+        # default recursive case, lookup base currency with no units
+        return (units or 1) * self.lookup_price(date=date, currency=base_currency, base_currency=None, units=None)
 
     def is_input_currency(self, currency: str) -> bool:
-        """ Check if a given currency is the configured input currency"""
+        """Check if a given currency is the configured input currency"""
         return currency == self.currency_in
 
     def is_output_currency(self, currency: str) -> bool:
-        """ Check if a given currency is the configured output currency"""
+        """Check if a given currency is the configured output currency"""
         return currency == self.currency_out
 
     def is_inout_currency(self, currency: str) -> bool:
-        """ Check if a given currency is the configured input or output currency """
+        """Check if a given currency is the configured input or output currency"""
         return currency in (self.currency_in, self.currency_out)
