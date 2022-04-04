@@ -67,8 +67,17 @@ class Trade:
         self.underlying = currencies[1]
         self.asset = currencies[0]
 
-    def normalize_executions(self, price_data: PriceData) -> Tuple[Union[Execution, None], Union[Execution, None]]:
-        """ Normalize the executions this trade represents """
+    def normalize_executions(self, price_data: PriceData) -> Tuple[Union[Execution, None], Union[Execution, None], Union[Execution, None]]:
+        """
+        Normalize the executions this trade represents
+
+        The result will be up to 3 executions, at most 1 buy and 2 sells
+
+        A second sell can occur if the fee is for a non-fiat currency which does not exist in the Buy or Sell.
+        In this case, we need to deduct that currency from any running totals during matching, and the way we do that is either a Sell or Transfer.
+        We use Sell rather than Transfer because a Transfer is not counted in P&L, but paying a fee in an execution should count as a liquidation and be counted.
+        Sells are always counted.
+        """
 
         if self.side == 'Buy':
             buy_quantity = self.quantity
@@ -147,6 +156,7 @@ class Trade:
         AttachTo is BUY if fee_currency == buy_currency OR sell is None or sell_currency == currency_in or currency_out
         Otherwise it is SELL
         """
+
         attach_fee_to_buy = buy is not None and ((buy.asset == self.fee_currency) or sell is None or price_data.is_inout_currency(sell.asset))
 
         # the actual amount of the fee in output currency
@@ -156,12 +166,16 @@ class Trade:
         else:
             fee_out = self.fee * price_data.lookup_price(self.date, self.fee_currency)[0]
 
-        if attach_fee_to_buy:
+        # if we have a cryptocurrency fee and it's neither the buy nor sell currency
+        fee_sell = None
+        if self.fee_currency not in (self.asset, self.underlying) and not price_data.is_inout_currency(self.fee_currency) and self.fee > 0:
+            fee_sell = Execution(self.exchange, self.date, self.fee_currency, 'Sell', self.fee, fee_out / self.fee, 0)
+        elif attach_fee_to_buy:
             self.modify_fee(buy, fee_out)
         elif sell is not None:
             self.modify_fee(sell, fee_out)
 
-        return buy, sell
+        return buy, sell, fee_sell
 
     def modify_fee(self, execution: Execution, fee_out: Decimal) -> None:
         """ Update the fee and potentially quantity """

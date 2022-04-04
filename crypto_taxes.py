@@ -143,7 +143,7 @@ def split_trades(trades: List[Trade], prices: PriceData, transfers: WaitingQueue
     executions: WaitingQueue = {}
 
     for trade in trades:
-        buy, sell = trade.normalize_executions(prices)
+        buy, sell, sell_fee = trade.normalize_executions(prices)
         if buy is not None and buy.asset not in excl_fiat:
             if not buy.asset in executions:
                 executions[buy.asset] = []
@@ -152,6 +152,10 @@ def split_trades(trades: List[Trade], prices: PriceData, transfers: WaitingQueue
             if not sell.asset in executions:
                 executions[sell.asset] = []
             enqueue(executions[sell.asset], sell, merge_minutes)
+        if sell_fee is not None:
+            if not sell_fee.asset in executions:
+                executions[sell_fee.asset] = []
+            enqueue(executions[sell_fee.asset], sell_fee, merge_minutes)
 
     # add transfers if any
     for asset, asset_transfers in transfers.items():
