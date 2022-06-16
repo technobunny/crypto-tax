@@ -42,7 +42,7 @@ class Execution:
         """Return whether this Execution is a Transfer or not"""
         return self.side == 'Transfer'
 
-def reduce_executions(first: Execution, second: Execution) -> tuple(Decimal, Decimal, Decimal):
+def reduce_executions(first: Execution, second: Execution) -> tuple([Decimal, Decimal, Decimal]):
     """Reduce the two executions by the maximum common quantity, adjusting fees.
 
     Returns
